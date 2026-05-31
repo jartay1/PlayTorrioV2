@@ -49,9 +49,14 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
   bool _showFullSynopsis = false;
   List<Movie> _similarContent = [];
 
-  // Source Selection
-  final String _selectedSourceId = 'playtorrio';
+// Source Selection — 0 = Stremio tab (default), 1 = Auto tab
+  int _sourceTabIndex = 0;
   List<Map<String, dynamic>> _streamAddons = [];
+
+  // Stremio streams state
+  bool _isLoadingStremioStreams = false;
+  List<Map<String, dynamic>> _stremioStreams = [];
+  String? _stremioError;
 
   // TV State
   int _selectedSeason = 1;
@@ -114,13 +119,16 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
           ? await _api.getSimilarTvShows(_movie.id)
           : await _api.getSimilarMovies(_movie.id);
       
-      if (mounted) {
+if (mounted) {
         setState(() {
           _movie = fullDetails;
           _streamAddons = streamAddons;
           _similarContent = similar;
           _isLoading = false;
         });
+
+        // Auto-load Stremio streams on open
+        _loadStremioStreams();
 
         // Auto-start extraction when opened with a start position (e.g. from Continue Watching / Trakt)
         if (widget.startPosition != null) {
@@ -169,6 +177,55 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
     await _loadWatchedEpisodes();
   }
 
+Future<void> _loadStremioStreams() async {
+    if (_streamAddons.isEmpty) return;
+    setState(() {
+      _isLoadingStremioStreams = true;
+      _stremioError = null;
+      _stremioStreams = [];
+    });
+    try {
+      final isTv = _movie.mediaType == 'tv';
+      final imdbId = _movie.imdbId ?? '';
+      final List<Map<String, dynamic>> allStreams = [];
+      for (final addon in _streamAddons) {
+        try {
+          final baseUrl = addon['baseUrl'] as String;
+          String stremioId = imdbId;
+          if (isTv && stremioId.isNotEmpty) {
+            stremioId = '$stremioId:$_selectedSeason:$_selectedEpisode';
+          }
+          if (stremioId.isEmpty) continue;
+          final type = isTv ? 'series' : 'movie';
+          final streams = await _stremio.getStreams(
+            baseUrl: baseUrl,
+            type: type,
+            id: stremioId,
+          );
+          for (final s in streams) {
+            final tagged = Map<String, dynamic>.from(s as Map);
+            tagged['_addonName'] = addon['name'] ?? 'Addon';
+            allStreams.add(tagged);
+          }
+        } catch (_) {}
+      }
+      if (mounted) {
+        setState(() {
+          _stremioStreams = allStreams;
+          _isLoadingStremioStreams = false;
+          if (allStreams.isEmpty) _stremioError = 'No streams found from Stremio addons.';
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _isLoadingStremioStreams = false;
+          _stremioError = 'Error loading streams: $e';
+        });
+      }
+    }
+  }
+  
   // ═══════════════════════════════════════════════════════════════════════════
   // EXTRACTION LOGIC - PRESERVED FROM ORIGINAL
   // ═══════════════════════════════════════════════════════════════════════════
@@ -775,66 +832,278 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
     );
   }
 
-  Widget _buildActionButtons() {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final isDesktop = screenWidth >= 600;
-    
-    return Padding(
-      padding: EdgeInsets.zero,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (_isExtracting)
-            Column(
-              children: [
-                const CircularProgressIndicator(color: Color(0xFF1565C0)),
-                const SizedBox(height: 16),
-                Text(
-                  _statusMessage ?? 'Processing...',
-                  style: const TextStyle(color: Colors.white70),
+Widget _buildActionButtons() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Tab bar: Stremio | Auto
+        Row(
+          children: [
+            _buildSourceTab(0, Icons.extension_rounded, 'Stremio'),
+            const SizedBox(width: 10),
+            _buildSourceTab(1, Icons.auto_awesome_rounded, 'Auto'),
+          ],
+        ),
+        const SizedBox(height: 16),
+        if (_sourceTabIndex == 0)
+          _buildStremioSourcesPanel()
+        else
+          _buildAutoPanel(),
+      ],
+    );
+  }
+
+  Widget _buildSourceTab(int index, IconData icon, String label) {
+    final isSelected = _sourceTabIndex == index;
+    return GestureDetector(
+      onTap: () => setState(() => _sourceTabIndex = index),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+        decoration: BoxDecoration(
+          color: isSelected
+              ? const Color(0xFF1565C0)
+              : Colors.white.withValues(alpha: 0.08),
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+            color: isSelected
+                ? const Color(0xFF1565C0)
+                : Colors.white.withValues(alpha: 0.2),
+          ),
+          boxShadow: isSelected
+              ? [BoxShadow(color: const Color(0xFF1565C0).withValues(alpha: 0.4), blurRadius: 12)]
+              : null,
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: Colors.white, size: 16),
+            const SizedBox(width: 6),
+            Text(label,
+                style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStremioSourcesPanel() {
+    if (_isLoadingStremioStreams) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(vertical: 20),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 20, height: 20,
+              child: CircularProgressIndicator(
+                  color: Color(0xFF1565C0), strokeWidth: 2),
+            ),
+            SizedBox(width: 12),
+            Text('Fetching Stremio streams…',
+                style: TextStyle(color: Colors.white70, fontSize: 14)),
+          ],
+        ),
+      );
+    }
+
+    if (_stremioStreams.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              _stremioError ?? 'No Stremio addon streams available.',
+              style: const TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            GestureDetector(
+              onTap: _loadStremioStreams,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: Colors.white24),
                 ),
-              ],
-            )
-          else
-            MouseRegion(
-              cursor: SystemMouseCursors.click,
-              child: GestureDetector(
-                onTap: _startExtraction,
-                child: Container(
-                  width: isDesktop ? 300 : double.infinity,
-                  height: 56,
-                  decoration: BoxDecoration(
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFF1565C0), Color(0xFF0D47A1)],
-                    ),
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFF1565C0).withValues(alpha: 0.4),
-                        blurRadius: 20,
-                        spreadRadius: 2,
-                      ),
-                    ],
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      const Icon(Icons.play_arrow, color: Colors.white, size: 28),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Play Now',
-                        style: GoogleFonts.montserrat(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.refresh_rounded, color: Colors.white70, size: 16),
+                    SizedBox(width: 6),
+                    Text('Retry', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  ],
                 ),
               ),
             ),
+          ],
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: _stremioStreams.map((stream) {
+        final name = (stream['name'] ?? stream['title'] ?? 'Stream').toString();
+        final description = (stream['description'] ?? stream['title'] ?? '').toString();
+        final url = stream['url']?.toString() ?? '';
+        final addonName = (stream['_addonName'] ?? '').toString();
+        final behaviorHints = stream['behaviorHints'] as Map? ?? {};
+        final notWebReady = behaviorHints['notWebReady'] == true;
+
+        return GestureDetector(
+          onTap: () {
+            if (url.isEmpty) return;
+            final isTv = _movie.mediaType == 'tv';
+            final title = isTv
+                ? '${_movie.title} - S$_selectedSeason E$_selectedEpisode'
+                : _movie.title;
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (_) => PlayerScreen(
+                  streamUrl: url,
+                  title: title,
+                  movie: _movie,
+                  selectedSeason: isTv ? _selectedSeason : null,
+                  selectedEpisode: isTv ? _selectedEpisode : null,
+                  startPosition: widget.startPosition,
+                ),
+              ),
+            );
+          },
+          child: Container(
+            margin: const EdgeInsets.only(bottom: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF1565C0).withValues(alpha: 0.2),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(Icons.play_arrow_rounded,
+                      color: Color(0xFF1565C0), size: 20),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Flexible(
+                            child: Text(name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 13)),
+                          ),
+                          if (notWebReady) ...[
+                            const SizedBox(width: 6),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 6, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: Colors.orange.withValues(alpha: 0.2),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(
+                                    color: Colors.orange.withValues(alpha: 0.5)),
+                              ),
+                              child: const Text('P2P',
+                                  style: TextStyle(
+                                      color: Colors.orange,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ],
+                      ),
+                      if (description.isNotEmpty) ...[
+                        const SizedBox(height: 3),
+                        Text(description,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                color: Colors.white54, fontSize: 11)),
+                      ],
+                      if (addonName.isNotEmpty) ...[
+                        const SizedBox(height: 3),
+                        Text('via $addonName',
+                            style: const TextStyle(
+                                color: Colors.white38, fontSize: 10)),
+                      ],
+                    ],
+                  ),
+                ),
+                const Icon(Icons.chevron_right_rounded,
+                    color: Colors.white30, size: 20),
+              ],
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildAutoPanel() {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isDesktop = screenWidth >= 600;
+    if (_isExtracting) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const CircularProgressIndicator(color: Color(0xFF1565C0)),
+          const SizedBox(height: 16),
+          Text(_statusMessage ?? 'Processing...',
+              style: const TextStyle(color: Colors.white70)),
         ],
+      );
+    }
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: _startExtraction,
+        child: Container(
+          width: isDesktop ? 300 : double.infinity,
+          height: 56,
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFF1565C0), Color(0xFF0D47A1)],
+            ),
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFF1565C0).withValues(alpha: 0.4),
+                blurRadius: 20,
+                spreadRadius: 2,
+              ),
+            ],
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.auto_awesome_rounded, color: Colors.white, size: 24),
+              const SizedBox(width: 8),
+              Text('Auto Find Stream',
+                  style: GoogleFonts.montserrat(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white)),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -1010,9 +1279,13 @@ class _StreamingDetailsScreenState extends State<StreamingDetailsScreen> with At
                   isSelected: isSelected,
                   isWatched: isWatched,
                   onToggleWatched: () => _toggleEpisodeWatched(_selectedSeason, epNum),
-                  onTap: () {
+onTap: () {
                     setState(() => _selectedEpisode = epNum);
-                    _startExtraction();
+                    if (_sourceTabIndex == 0) {
+                      _loadStremioStreams();
+                    } else {
+                      _startExtraction();
+                    }
                   },
                 );
               },
