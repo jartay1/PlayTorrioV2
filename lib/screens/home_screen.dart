@@ -2559,17 +2559,17 @@ class _ContinueWatchingSectionState extends State<_ContinueWatchingSection> {
                 padding: const EdgeInsets.symmetric(horizontal: 24),
                 itemCount: history.length,
                 separatorBuilder: (_, _) => const SizedBox(width: 14),
-                itemBuilder: (context, index) {
-                  final historyItem = history[index];
-                  final itemId = historyItem['uniqueId'] as String;
-                  return _HistoryCard(
-                    item: historyItem,
-                    onTap: () => _resumePlayback(historyItem),
-                    onRemove: () => _removeItem(historyItem),
-                    onInfo: () => _openHistoryItemDetails(historyItem),
-                    isLoading: _loadingItemId == itemId,
-                  );
-                },
+itemBuilder: (context, index) {
+  final historyItem = history[index];
+  final itemId = historyItem['uniqueId'] as String;
+  return _HistoryCard(
+    item: historyItem,
+    onTap: () => _openHistoryItemDetails(historyItem),
+    onRemove: () => _removeItem(historyItem),
+    onInfo: () => _openHistoryItemDetails(historyItem),
+    isLoading: _loadingItemId == itemId,
+  );
+},
               ),
             ),
           ],
@@ -3550,21 +3550,34 @@ class _ContinueWatchingHeroState extends State<_ContinueWatchingHero> {
               color: Colors.transparent,
               child: InkWell(
                 borderRadius: BorderRadius.circular(20),
-                onTap: () {
-                  if (tmdbId == null) return;
-                  final movie = Movie(
-                    id: tmdbId,
-                    title: title,
-                    posterPath: posterPath,
-                    backdropPath: _backdropPath ?? '',
-                    voteAverage: 0,
-                    releaseDate: '',
-                    overview: '',
-                    mediaType: mediaType,
-                    imdbId: item['imdbId'] as String?,
-                  );
-                  widget.onOpen(movie);
-                },
+onTap: () async {
+  if (tmdbId == null) return;
+  final movie = Movie(
+    id: tmdbId,
+    title: title,
+    posterPath: posterPath,
+    backdropPath: _backdropPath ?? '',
+    voteAverage: 0,
+    releaseDate: '',
+    overview: '',
+    mediaType: mediaType,
+    imdbId: item['imdbId'] as String?,
+  );
+  final season = item['season'] as int?;
+  final episode = item['episode'] as int?;
+  final context = this.context;
+  if (!context.mounted) return;
+  await Navigator.push(
+    context,
+    MaterialPageRoute(
+      builder: (_) => StreamingDetailsScreen(
+        movie: movie,
+        initialSeason: season,
+        initialEpisode: episode,
+      ),
+    ),
+  );
+},
                 child: Container(
                   height: cardHeight,
                   clipBehavior: Clip.antiAlias,
